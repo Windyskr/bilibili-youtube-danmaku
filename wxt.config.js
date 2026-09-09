@@ -10,16 +10,10 @@ const hostPermissions = [
 ];
 
 function replaceRegexRequired(code, pattern, replacement, label) {
-    const matches = code.match(pattern);
-    if (!matches?.length) {
-        const index = code.indexOf(label);
-        const snippet = (index >= 0 ? code.slice(Math.max(0, index - 160), index + 320) : code.slice(0, 480))
-            .replace(/\s+/g, ' ')
-            .slice(0, 480);
-        throw new Error(
-            `[danmu_api integration] 无法注入 ${label}：index=${index}; snippet=${snippet}`
-        );
+    if (!pattern.test(code)) {
+        throw new Error(`[danmu_api integration] 无法注入 ${label}：上游代码结构可能已变化`);
     }
+    pattern.lastIndex = 0;
     return code.replace(pattern, replacement);
 }
 
@@ -31,11 +25,20 @@ function createDanmuApiIntegrationPlugin() {
             const cleanId = id.split('?')[0].replace(/\\/g, '/');
 
             if (cleanId.endsWith('/entrypoints/popup/popup.js')) {
+                // `wxt prepare` may expose only an entrypoint stub. Inject only into the real source.
+                if (!code.includes('channelAssociation') || !code.includes('getCurrentTab')) return null;
                 if (code.includes("./danmu-api-settings.js")) return null;
                 return { code: `import './danmu-api-settings.js';\n${code}`, map: null };
             }
 
             if (!cleanId.endsWith('/entrypoints/background/index.js')) return null;
+
+            // During `wxt prepare`, WXT replaces the actual background body with
+            // `export default defineBackground();`. It is not a build failure: the real
+            // source is presented during `wxt build`, where we perform the integration.
+            if (!code.includes('downloadAllDanmaku') || !code.includes('searchBilibiliVideoAllV2')) {
+                return null;
+            }
 
             let transformed = code;
             if (!transformed.includes("./danmu-api-router.js")) {
