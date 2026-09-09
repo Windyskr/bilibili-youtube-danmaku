@@ -27,8 +27,49 @@ function createDanmuApiIntegrationPlugin() {
             if (cleanId.endsWith('/entrypoints/popup/popup.js')) {
                 // `wxt prepare` may expose only an entrypoint stub. Inject only into the real source.
                 if (!code.includes('channelAssociation') || !code.includes('getCurrentTab')) return null;
-                if (code.includes("./danmu-api-settings.js")) return null;
-                return { code: `import './danmu-api-settings.js';\n${code}`, map: null };
+
+                let transformed = code;
+                if (!transformed.includes("./danmu-api-settings.js")) {
+                    transformed = `import './danmu-api-settings.js';
+
+async function getDanmuApiSearchStatusText() {
+    const data = await browser.storage.local.get('danmuApiSettings');
+    const settings = data.danmuApiSettings || {};
+    const enabled = settings.mode === 'danmuApi' && Boolean(settings.baseUrl);
+    if (!enabled) return '正在搜索B站视频...';
+    return settings.fallbackToBilibili !== false
+        ? '正在通过 danmu_api 匹配剧集（未命中时将回退 B 站）...'
+        : '正在通过 danmu_api 匹配剧集...';
+}
+
+function getDanmuApiResultStatusText(searchResponse, count) {
+    if (searchResponse?.danmuApiFallback) {
+        return 'danmu_api 未匹配，已回退 B 站，找到 ' + count + ' 个相关视频';
+    }
+    if (searchResponse?.danmuApi) {
+        return 'danmu_api 找到 ' + count + ' 个剧集候选';
+    }
+    return '找到 ' + count + ' 个相关视频';
+}
+
+${transformed}`;
+                }
+
+                transformed = replaceRegexRequired(
+                    transformed,
+                    /if \(!silent\) showStatus\('正在搜索B站视频\.\.\.', 'loading'\);(?=\s*const searchResponse = await browser\.runtime\.sendMessage\(\{\s*type:\s*'searchBilibiliVideoAllV2')/g,
+                    "if (!silent) showStatus(await getDanmuApiSearchStatusText(), 'loading');",
+                    'Popup danmu_api search status'
+                );
+
+                transformed = replaceRegexRequired(
+                    transformed,
+                    /if \(!silent\) showStatus\(`找到 \$\{results\.length\} 个相关视频`, 'info'\);/g,
+                    "if (!silent) showStatus(getDanmuApiResultStatusText(searchResponse, results.length), 'info');",
+                    'Popup danmu_api result status'
+                );
+
+                return { code: transformed, map: null };
             }
 
             if (!cleanId.endsWith('/entrypoints/background/index.js')) return null;
