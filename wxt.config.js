@@ -12,7 +12,13 @@ const hostPermissions = [
 function replaceRegexRequired(code, pattern, replacement, label) {
     const matches = code.match(pattern);
     if (!matches?.length) {
-        throw new Error(`[danmu_api integration] 无法注入 ${label}：上游代码结构可能已变化`);
+        const index = code.indexOf(label);
+        const snippet = (index >= 0 ? code.slice(Math.max(0, index - 160), index + 320) : code.slice(0, 480))
+            .replace(/\s+/g, ' ')
+            .slice(0, 480);
+        throw new Error(
+            `[danmu_api integration] 无法注入 ${label}：index=${index}; snippet=${snippet}`
+        );
     }
     return code.replace(pattern, replacement);
 }
