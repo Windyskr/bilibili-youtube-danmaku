@@ -303,7 +303,7 @@ async function searchByEpisodes(keyword, settings) {
 
     for (const anime of animes) {
         const episodes = Array.isArray(anime?.episodes) ? anime.episodes : [];
-        for (const episode of chooseEpisodes(episodes, episodeNumber)) {
+        for (const episode of episodes.slice(0, 5)) {
             candidates.push({
                 episodeId: episode.episodeId,
                 animeId: anime.animeId,
@@ -321,14 +321,14 @@ async function searchByEpisodes(keyword, settings) {
     return candidates;
 }
 
-async function searchByAnimeLegacy(keyword, settings) {
+async function searchByAnimeLegacy(keyword, settings, episodeNumberOverride = null) {
     const search = await requestJson(
         `/api/v2/search/anime?keyword=${encodeURIComponent(keyword)}`,
         {},
         settings
     );
     const animes = Array.isArray(search?.animes) ? search.animes.slice(0, 5) : [];
-    const episodeNumber = episodeNumberFromTitle(keyword);
+    const episodeNumber = episodeNumberOverride || episodeNumberFromTitle(keyword);
     const candidates = [];
 
     for (const anime of animes) {
@@ -434,7 +434,11 @@ export async function searchDanmuApi(keyword) {
         const legacyQuery = stripEpisodeMarker(cleanTitleForDanmuApi(query)) || cleanTitleForDanmuApi(query);
         if (legacyQuery) {
             try {
-                candidates = await searchByAnimeLegacy(legacyQuery, settings);
+                candidates = await searchByAnimeLegacy(
+                    legacyQuery,
+                    settings,
+                    episodeNumberFromTitle(query)
+                );
                 if (candidates.length) {
                     matchedQuery = legacyQuery;
                     confidence = 0.78;
