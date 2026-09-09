@@ -39,3 +39,4 @@ jobs:
               run: |
                   grep -R -q "DMAPI_" .output
                   grep -R -q "/api/v2/match" .output
+                  grep -R -q "danmu-api-settings-toggle" .output
