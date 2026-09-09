@@ -1,0 +1,36 @@
+name: 扩展构建检查
+
+on:
+    pull_request:
+    push:
+        branches: [main]
+        paths-ignore:
+            - '**/*.md'
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                browser: [chrome, firefox]
+
+        steps:
+            - name: 检出代码
+              uses: actions/checkout@v4
+
+            - name: 设置 Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+                  cache: npm
+
+            - name: 安装依赖
+              run: npm ci
+
+            - name: 构建 ${{ matrix.browser }}
+              run: npm run build:${{ matrix.browser }}
