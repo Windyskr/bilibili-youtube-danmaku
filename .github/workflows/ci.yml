@@ -34,3 +34,8 @@ jobs:
 
             - name: 构建 ${{ matrix.browser }}
               run: npm run build:${{ matrix.browser }}
+
+            - name: 验证 danmu_api 已进入构建产物
+              run: |
+                  grep -R -q "DMAPI_" .output
+                  grep -R -q "/api/v2/match" .output
