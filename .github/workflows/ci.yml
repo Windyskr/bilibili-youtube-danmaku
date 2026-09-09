@@ -40,3 +40,21 @@ jobs:
                   grep -R -q "DMAPI_" .output
                   grep -R -q "/api/v2/match" .output
                   grep -R -q "danmu-api-settings-toggle" .output
+
+            - name: 上传 Chrome 构建产物
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.browser == 'chrome'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: chrome-mv3
+                  path: .output/chrome-mv3/
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: 上传 Firefox 构建产物
+              if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.browser == 'firefox'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: firefox
+                  path: .output/firefox-*/
+                  if-no-files-found: error
+                  retention-days: 30
