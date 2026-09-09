@@ -9,11 +9,89 @@ const hostPermissions = [
     'https://pan.quark.cn/*'
 ];
 
-// See https://wxt.dev/api/config.html
+function replaceRegexRequired(code, pattern, replacement, label) {
+    if (!pattern.test(code)) {
+        throw new Error(`[danmu_api integration] 无法注入 ${label}：上游代码结构可能已变化`);
+    }
+    pattern.lastIndex = 0;
+    return code.replace(pattern, replacement);
+}
+
+function createDanmuApiIntegrationPlugin() {
+    return {
+        name: 'b2y-danmu-api-integration',
+        enforce: 'pre',
+        transform(code, id) {
+            const cleanId = id.split('?')[0].replace(/\\/g, '/');
+
+            if (cleanId.endsWith('/entrypoints/popup/popup.js')) {
+                // `wxt prepare` may expose only an entrypoint stub. Inject only into the real source.
+                if (!code.includes('channelAssociation') || !code.includes('getCurrentTab')) return null;
+                if (code.includes("./danmu-api-settings.js")) return null;
+                return { code: `import './danmu-api-settings.js';\n${code}`, map: null };
+            }
+
+            if (!cleanId.endsWith('/entrypoints/background/index.js')) return null;
+
+            // During `wxt prepare`, WXT replaces the actual background body with
+            // `export default defineBackground();`. It is not a build failure: the real
+            // source is presented during `wxt build`, where we perform the integration.
+            if (!code.includes('downloadAllDanmaku') || !code.includes('searchBilibiliVideoAllV2')) {
+                return null;
+            }
+
+            let transformed = code;
+            if (!transformed.includes("./danmu-api-router.js")) {
+                transformed = `import { downloadDanmuApi, isDanmuApiEnabled, searchDanmuApi, shouldFallbackToBilibili } from './danmu-api-router.js';\n${transformed}`;
+            }
+
+            transformed = replaceRegexRequired(
+                transformed,
+                /async\s+function\s+downloadAllDanmaku\s*\(\s*bvid\s*,\s*youtubeVideoDuration\s*\)\s*\{\s*try\s*\{/,
+                `async function downloadAllDanmaku(bvid, youtubeVideoDuration) {\n        if (await isDanmuApiEnabled()) {\n            try {\n                return await downloadDanmuApi(bvid, youtubeVideoDuration);\n            } catch (error) {\n                console.error('[danmu_api] 下载失败:', error);\n                if (\n                    String(bvid || '').startsWith('DMAPI_') ||\n                    !(await shouldFallbackToBilibili())\n                ) {\n                    throw error;\n                }\n                console.warn('[danmu_api] 回退到原生 Bilibili 弹幕下载');\n            }\n        }\n\n        try {`,
+                'downloadAllDanmaku'
+            );
+
+            transformed = replaceRegexRequired(
+                transformed,
+                /async\s+function\s+searchBilibiliVideoAllV2\s*\(\s*keyword\s*,\s*options\s*=\s*\{\s*\}\s*\)\s*\{\s*try\s*\{/,
+                `async function searchBilibiliVideoAllV2(keyword, options = {}) {\n        try {\n            if (await isDanmuApiEnabled()) {\n                const danmuApiResult = await searchDanmuApi(keyword);\n                if (danmuApiResult.success) return danmuApiResult;\n                if (!(await shouldFallbackToBilibili())) return danmuApiResult;\n                console.warn('[danmu_api] 搜索失败，回退到原生 Bilibili 搜索:', danmuApiResult.error);\n            }`,
+                'searchBilibiliVideoAllV2'
+            );
+
+            transformed = replaceRegexRequired(
+                transformed,
+                /bvid:\s*request\.bvid,\s*bilibili_url:\s*`https:\/\/www\.bilibili\.com\/video\/\$\{request\.bvid\}`,/g,
+                `bvid: data.bvid || request.bvid,\n                            bilibili_url:\n                                data.sourceUrl ||\n                                \`https://www.bilibili.com/video/\${data.bvid || request.bvid}\`,` ,
+                'download result source URL'
+            );
+
+            transformed = transformed.replace(
+                /matchSource:\s*matchInfo\.source\s*\|\|\s*'manual',/g,
+                `matchSource: data.sourceType || matchInfo.source || 'manual',`
+            );
+            transformed = transformed.replace(
+                /matchSource:\s*matchInfo\.source\s*\|\|\s*'search',/g,
+                `matchSource: data.sourceType || matchInfo.source || 'search',`
+            );
+            transformed = transformed.replace(
+                /bilibili_url:\s*`https:\/\/www\.bilibili\.com\/video\/\$\{bvid\}`,/g,
+                `bilibili_url:\n                                data.sourceUrl || \`https://www.bilibili.com/video/\${bvid}\`,`
+            );
+
+            return { code: transformed, map: null };
+        }
+    };
+}
+
 export default defineConfig({
-    manifest: ({ browser }) => ({
+    vite: () => ({ plugins: [createDanmuApiIntegrationPlugin()] }),
+    manifest: ({ browser, manifestVersion }) => ({
         permissions,
         host_permissions: hostPermissions,
+        ...(manifestVersion === 2
+            ? { optional_permissions: ['http://*/*', 'https://*/*'] }
+            : { optional_host_permissions: ['http://*/*', 'https://*/*'] }),
         ...(browser === 'firefox'
             ? {
                   browser_specific_settings: {
