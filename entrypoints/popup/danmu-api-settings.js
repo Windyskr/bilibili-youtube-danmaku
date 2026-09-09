@@ -53,14 +53,16 @@ function setStatus(message, type = '') {
 function applyLabels(settings) {
     const enabled = settings.mode === 'danmuApi';
     const title = document.querySelector('#main-container > h1');
-    if (title) title.textContent = enabled ? '全平台弹幕 → YouTube' : 'B站弹幕 → YouTube';
+    if (title) title.textContent = enabled ? 'danmu_api 弹幕 → YouTube' : 'B站弹幕 → YouTube';
 
     const searchTitle = document.querySelector('#search-results .youtube-search-header h3');
-    if (searchTitle) searchTitle.textContent = enabled ? '全平台弹幕' : 'B站弹幕';
+    if (searchTitle) searchTitle.textContent = enabled ? 'danmu_api 剧集匹配' : 'B站弹幕';
 
     const searchInput = document.getElementById('youtube-search-input');
     if (searchInput) {
-        searchInput.placeholder = enabled ? '输入标题 / 剧集名搜索' : '输入视频标题搜索';
+        searchInput.placeholder = enabled
+            ? '输入剧名 / 集数，如：赴山海 S01E28'
+            : '输入视频标题搜索';
     }
 
     for (const id of ['youtube-view-bilibili-btn', 'quark-view-bilibili-btn']) {
@@ -82,7 +84,8 @@ async function testConnection(baseUrl, timeoutMs) {
         const url = `${normalizeBaseUrl(baseUrl)}/api/v2/search/anime?keyword=${encodeURIComponent('B2Y')}`;
         const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        await response.json();
+        const payload = await response.json();
+        if (!payload || typeof payload !== 'object') throw new Error('接口未返回 JSON 对象');
     } catch (error) {
         if (error?.name === 'AbortError') throw new Error(`连接超时（${timeoutMs}ms）`);
         throw error;
@@ -113,16 +116,19 @@ function createUi() {
                 <span>弹幕来源</span>
                 <select id="danmu-api-mode">
                     <option value="bilibili">原生 Bilibili</option>
-                    <option value="danmuApi">danmu_api（全平台）</option>
+                    <option value="danmuApi">danmu_api（剧集 / 多平台弹幕）</option>
                 </select>
             </label>
+            <div class="danmu-api-settings-note" id="danmu-api-mode-note">
+                danmu_api 的搜索接口是“剧名/剧集匹配”，不是爱优腾等平台的通用视频全文搜索。自动匹配建议使用“剧名 S01E02”“剧名 第2集”这类标题；普通剪辑标题可选择回退 B 站搜索。
+            </div>
             <label class="danmu-api-field" id="danmu-api-url-field">
                 <span>danmu_api 地址</span>
                 <input id="danmu-api-base-url" type="url" spellcheck="false" placeholder="https://danmu.example.com/87654321" />
                 <small>启用了 TOKEN 时，把 token 路径一起填入。</small>
             </label>
             <label class="danmu-api-field danmu-api-inline-field" id="danmu-api-fallback-field">
-                <span>API 失败时回退原生 B 站</span>
+                <span>未匹配/请求失败时用 B 站搜索兜底</span>
                 <input id="danmu-api-fallback" type="checkbox" checked />
             </label>
             <label class="danmu-api-field" id="danmu-api-timeout-field">
@@ -147,6 +153,7 @@ function createUi() {
     const fallback = document.getElementById('danmu-api-fallback');
     const timeout = document.getElementById('danmu-api-timeout');
     const testButton = document.getElementById('danmu-api-test');
+    const modeNote = document.getElementById('danmu-api-mode-note');
 
     const updateFields = () => {
         const enabled = mode.value === 'danmuApi';
@@ -157,6 +164,7 @@ function createUi() {
         fallback.disabled = !enabled;
         timeout.disabled = !enabled;
         testButton.disabled = !enabled;
+        if (modeNote) modeNote.style.display = enabled ? 'block' : 'none';
     };
 
     const open = async () => {
@@ -191,7 +199,7 @@ function createUi() {
             if (!granted) return setStatus('未授予该 API 地址的访问权限', 'error');
             setStatus('正在测试连接…', 'loading');
             await testConnection(value, timeoutMs);
-            setStatus('连接成功', 'success');
+            setStatus('连接成功（这里只验证接口可访问，不代表任意视频标题都能匹配）', 'success');
         } catch (error) {
             setStatus(`连接失败：${error.message}`, 'error');
         }

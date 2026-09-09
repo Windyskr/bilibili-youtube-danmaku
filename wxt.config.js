@@ -55,8 +55,15 @@ function createDanmuApiIntegrationPlugin() {
             transformed = replaceRegexRequired(
                 transformed,
                 /async\s+function\s+searchBilibiliVideoAllV2\s*\(\s*keyword\s*,\s*options\s*=\s*\{\s*\}\s*\)\s*\{\s*try\s*\{/,
-                `async function searchBilibiliVideoAllV2(keyword, options = {}) {\n        try {\n            if (await isDanmuApiEnabled()) {\n                const danmuApiResult = await searchDanmuApi(keyword);\n                if (danmuApiResult.success) return danmuApiResult;\n                if (!(await shouldFallbackToBilibili())) return danmuApiResult;\n                console.warn('[danmu_api] 搜索失败，回退到原生 Bilibili 搜索:', danmuApiResult.error);\n            }`,
+                `async function searchBilibiliVideoAllV2(keyword, options = {}) {\n        try {\n            if (!options.__skipDanmuApi && (await isDanmuApiEnabled())) {\n                const danmuApiResult = await searchDanmuApi(keyword);\n                if (danmuApiResult.success) return danmuApiResult;\n                if (!(await shouldFallbackToBilibili())) return danmuApiResult;\n\n                console.warn(\n                    '[danmu_api] 未匹配，使用 Bilibili 搜索兜底:',\n                    danmuApiResult.error\n                );\n                const fallbackResult = await searchBilibiliVideoAllV2(keyword, {\n                    ...options,\n                    __skipDanmuApi: true\n                });\n\n                if (!fallbackResult?.success) return fallbackResult;\n                return {\n                    ...fallbackResult,\n                    danmuApiFallback: true,\n                    danmuApiError: danmuApiResult.error,\n                    results: (fallbackResult.results || []).map((item) => ({\n                        ...item,\n                        danmuApiFallback: true,\n                        danmuApiFallbackReason: danmuApiResult.error,\n                        author: item.author\n                            ? \`B站搜索回退 · \${item.author}\`\n                            : 'B站搜索回退'\n                    }))\n                };\n            }`,
                 'searchBilibiliVideoAllV2'
+            );
+
+            transformed = replaceRegexRequired(
+                transformed,
+                /return\s+searchBilibiliVideoAllV2\(fallbackKeyword,\s*\{\s*skipBracketFallback:\s*true,\s*matchKeyword:\s*matchKeyword\s*\}\);/,
+                `return searchBilibiliVideoAllV2(fallbackKeyword, {\n                        skipBracketFallback: true,\n                        matchKeyword: matchKeyword,\n                        __skipDanmuApi: options.__skipDanmuApi\n                    });`,
+                'Bilibili bracket fallback'
             );
 
             transformed = replaceRegexRequired(

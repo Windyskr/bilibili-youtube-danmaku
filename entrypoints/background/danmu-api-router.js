@@ -81,6 +81,75 @@ async function requestJson(path, options = {}, settings = null) {
     }
 }
 
+function compactSpaces(value) {
+    return String(value || '')
+        .replace(/[\u00a0\t\r\n]+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+function isNoiseBracketText(value) {
+    return /(?:\beng\b|\bsub(?:title)?s?\b|\bfull\b|\bcomplete\b|\bofficial\b|\bclip\b|\btrailer\b|\bteaser\b|\b4k\b|\b2160p\b|\b1080p\b|\b720p\b|\bhdr\b|中字|字幕|双语|完整版|全集|预告|花絮|片段|cut)/i.test(
+        String(value || '')
+    );
+}
+
+function cleanTitleForDanmuApi(value) {
+    let text = String(value || '').trim();
+    text = text.replace(/\[([^\]]*)\]|【([^】]*)】/g, (full, a, b) => {
+        const inner = compactSpaces(a || b || '');
+        if (!inner) return ' ';
+        return isNoiseBracketText(inner) ? ' ' : ` ${inner} `;
+    });
+    text = text.replace(/\(([^)]*)\)|（([^）]*)）/g, (full, a, b) => {
+        const inner = compactSpaces(a || b || '');
+        return isNoiseBracketText(inner) ? ' ' : full;
+    });
+    text = text
+        .replace(/\b(?:ENG\s*SUB|SUB(?:TITLES?)?|FULL|COMPLETE|OFFICIAL|CLIP|TRAILER|TEASER|4K|2160P|1080P|720P|HDR)\b/gi, ' ')
+        .replace(/(?:中字|字幕|双语|完整版|全集|预告片?|花絮|片段|cut)/gi, ' ')
+        .replace(/\s*[|｜]+\s*/g, ' ')
+        .replace(/\s*[-–—]\s*YouTube\s*$/i, ' ');
+    return compactSpaces(text);
+}
+
+function stripEpisodeMarker(value) {
+    return compactSpaces(
+        String(value || '')
+            .replace(/\bS\d{1,2}E\d{1,4}\b/gi, ' ')
+            .replace(/(?:^|[\s._-])E\d{1,4}(?=$|[\s._-])/gi, ' ')
+            .replace(/第\s*\d{1,4}\s*[集话期]/g, ' ')
+            .replace(/\b(?:EP|Episode)\s*[._ -]?\d{1,4}\b/gi, ' ')
+    );
+}
+
+function buildQueryVariants(value) {
+    const original = compactSpaces(value);
+    const variants = [];
+    const seen = new Set();
+    const add = (candidate) => {
+        const text = compactSpaces(candidate);
+        if (!text || seen.has(text)) return;
+        seen.add(text);
+        variants.push(text);
+    };
+
+    add(original);
+
+    const bookTitles = [...original.matchAll(/《([^》]{2,80})》/g)].map((match) => match[1]);
+    bookTitles.forEach(add);
+
+    const cleaned = cleanTitleForDanmuApi(original);
+    add(cleaned);
+
+    const cleanedWithoutEpisode = stripEpisodeMarker(cleaned);
+    add(cleanedWithoutEpisode);
+
+    for (const segment of cleaned.split(/[|｜]/)) add(segment);
+
+    return variants.slice(0, 6);
+}
+
 function episodeNumberFromTitle(value) {
     const text = String(value || '');
     const patterns = [
@@ -186,7 +255,8 @@ function adaptCandidate(candidate, confidence = 1) {
             duration: '',
             pubdate: '',
             highlightRatio: confidence,
-            danmuApi: true
+            danmuApi: true,
+            danmuApiSource: label
         },
         mapping: {
             token,
@@ -215,14 +285,50 @@ function chooseEpisodes(episodes, episodeNumber) {
     return episodes[episodeNumber - 1] ? [episodes[episodeNumber - 1]] : [];
 }
 
-async function searchByAnime(keyword, settings) {
+async function searchByEpisodes(keyword, settings) {
+    const episodeNumber = episodeNumberFromTitle(keyword);
+    const animeKeyword = stripEpisodeMarker(cleanTitleForDanmuApi(keyword)) || cleanTitleForDanmuApi(keyword);
+    if (!animeKeyword) return [];
+
+    const params = new URLSearchParams({ anime: animeKeyword });
+    if (episodeNumber) params.set('episode', String(episodeNumber));
+
+    const search = await requestJson(`/api/v2/search/episodes?${params.toString()}`, {}, settings);
+    if (search?.success === false) {
+        throw new Error(search.errorMessage || search.message || 'danmu_api 剧集搜索失败');
+    }
+
+    const animes = Array.isArray(search?.animes) ? search.animes.slice(0, 5) : [];
+    const candidates = [];
+
+    for (const anime of animes) {
+        const episodes = Array.isArray(anime?.episodes) ? anime.episodes : [];
+        for (const episode of episodes.slice(0, 5)) {
+            candidates.push({
+                episodeId: episode.episodeId,
+                animeId: anime.animeId,
+                animeTitle: anime.animeTitle,
+                episodeTitle: episode.episodeTitle || '',
+                url: episode.url || '',
+                imageUrl: anime.imageUrl || '',
+                type: anime.type || '',
+                typeDescription: anime.typeDescription || ''
+            });
+            if (candidates.length >= 15) return candidates;
+        }
+    }
+
+    return candidates;
+}
+
+async function searchByAnimeLegacy(keyword, settings, episodeNumberOverride = null) {
     const search = await requestJson(
         `/api/v2/search/anime?keyword=${encodeURIComponent(keyword)}`,
         {},
         settings
     );
     const animes = Array.isArray(search?.animes) ? search.animes.slice(0, 5) : [];
-    const episodeNumber = episodeNumberFromTitle(keyword);
+    const episodeNumber = episodeNumberOverride || episodeNumberFromTitle(keyword);
     const candidates = [];
 
     for (const anime of animes) {
@@ -256,8 +362,24 @@ async function searchByAnime(keyword, settings) {
     return candidates;
 }
 
+async function matchByQuery(query, settings) {
+    const matched = await requestJson(
+        '/api/v2/match',
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: query })
+        },
+        settings
+    );
+    if (matched?.success === false) {
+        throw new Error(matched.errorMessage || matched.message || 'danmu_api 匹配失败');
+    }
+    return matched?.isMatched && Array.isArray(matched.matches) ? matched.matches : [];
+}
+
 export async function searchDanmuApi(keyword) {
-    const query = String(keyword || '').trim();
+    const query = compactSpaces(keyword);
     if (!query) return { success: false, error: '搜索关键词为空', danmuApi: true };
 
     const settings = await getDanmuApiSettings();
@@ -265,39 +387,65 @@ export async function searchDanmuApi(keyword) {
         return { success: false, error: 'danmu_api 未启用', danmuApi: true };
     }
 
+    const variants = buildQueryVariants(query);
     let candidates = [];
     let matchError = null;
+    let searchError = null;
+    let matchedQuery = '';
     let confidence = 1;
 
-    try {
-        const matched = await requestJson(
-            '/api/v2/match',
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fileName: query })
-            },
-            settings
-        );
-        if (matched?.isMatched && Array.isArray(matched.matches)) {
-            candidates = matched.matches;
+    for (let index = 0; index < variants.length; index++) {
+        const variant = variants[index];
+        try {
+            candidates = await matchByQuery(variant, settings);
+            if (candidates.length) {
+                matchedQuery = variant;
+                confidence = Math.max(0.9, 1 - index * 0.02);
+                break;
+            }
+        } catch (error) {
+            matchError = error;
+            console.warn(`[danmu_api] /match 失败（${variant}）:`, error);
+            break;
         }
-    } catch (error) {
-        matchError = error;
-        console.warn('[danmu_api] /match 失败，尝试 /search/anime:', error);
     }
 
     if (!candidates.length) {
-        try {
-            candidates = await searchByAnime(query, settings);
-            confidence = 0.85;
-        } catch (error) {
-            return {
-                success: false,
-                error: (matchError || error)?.message || 'danmu_api 搜索失败',
-                results: [],
-                danmuApi: true
-            };
+        for (let index = 0; index < variants.length; index++) {
+            const variant = variants[index];
+            try {
+                candidates = await searchByEpisodes(variant, settings);
+                if (candidates.length) {
+                    matchedQuery = variant;
+                    confidence = Math.max(0.78, 0.88 - index * 0.02);
+                    break;
+                }
+            } catch (error) {
+                searchError = error;
+                console.warn(`[danmu_api] /search/episodes 失败（${variant}）:`, error);
+                break;
+            }
+        }
+    }
+
+    // 兼容较老的 danmu_api：只有新的一体化剧集搜索接口不可用时，才退回旧的
+    // /search/anime -> /bangumi 两段式查询。云函数部署可能跨请求丢缓存，所以新接口优先。
+    if (!candidates.length && searchError) {
+        const legacyQuery = stripEpisodeMarker(cleanTitleForDanmuApi(query)) || cleanTitleForDanmuApi(query);
+        if (legacyQuery) {
+            try {
+                candidates = await searchByAnimeLegacy(
+                    legacyQuery,
+                    settings,
+                    episodeNumberFromTitle(query)
+                );
+                if (candidates.length) {
+                    matchedQuery = legacyQuery;
+                    confidence = 0.78;
+                }
+            } catch (error) {
+                searchError = error;
+            }
         }
     }
 
@@ -307,11 +455,18 @@ export async function searchDanmuApi(keyword) {
         .filter(Boolean);
     await saveMappings(adapted.map((item) => item.mapping));
 
+    const noMatchMessage =
+        matchError || searchError
+            ? (matchError || searchError).message
+            : `danmu_api 未找到匹配结果。建议使用剧名/集数，例如“赴山海 S01E28”；普通剪辑标题不会像 B 站那样做全站视频搜索。`;
+
     return {
         success: adapted.length > 0,
-        error: adapted.length ? undefined : matchError?.message || 'danmu_api 未找到匹配结果',
+        error: adapted.length ? undefined : noMatchMessage,
         results: adapted.map((item) => item.result),
         searchUrl: `${settings.baseUrl}/api/v2/match`,
+        query: matchedQuery || query,
+        attemptedQueries: variants,
         danmuApi: true
     };
 }
@@ -347,7 +502,7 @@ function convertComments(payload) {
             return {
                 time,
                 text,
-                color: colorToCss(comment?.color ?? p[2]),
+                color: colorToCss(comment?.color ?? p[3]),
                 mode: modeToEngine(comment?.mode ?? p[1]),
                 weight: Number.isFinite(Number(comment?.weight)) ? Number(comment.weight) : 5
             };
@@ -402,6 +557,10 @@ export async function downloadDanmuApi(target, youtubeVideoDuration) {
     }
 
     const danmakus = convertComments(payload);
+    if (!danmakus.length) {
+        throw new Error('danmu_api 返回 0 条弹幕');
+    }
+
     return {
         bvid: value,
         title: mapping?.title || value,
