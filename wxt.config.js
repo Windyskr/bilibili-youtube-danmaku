@@ -22,6 +22,7 @@ function createDanmuApiIntegrationPlugin() {
         enforce: 'pre',
         transform(code, id) {
             const cleanId = id.split('?')[0].replace(/\\/g, '/');
+            code = code.replace(/\r\n/g, '\n');
 
             if (cleanId.endsWith('/entrypoints/popup/popup.js')) {
                 if (code.includes("./danmu-api-settings.js")) return null;
